@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阿瓦隆 - 网页版</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; color: #333; text-align: center; padding: 20px; }
+        #app { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1, h2, h3 { color: #2c3e50; }
+        .hidden { display: none; }
+        .btn { padding: 10px 20px; margin: 10px; border: none; border-radius: 5px; background: #3498db; color: white; cursor: pointer; font-size: 16px; }
+        .btn:hover { background: #2980b9; }
+        .btn-danger { background: #e74c3c; }
+        .btn-danger:hover { background: #c0392b; }
+        .btn-success { background: #2ecc71; }
+        .btn-success:hover { background: #27ae60; }
+        input[type="text"], select { padding: 10px; margin: 5px; width: 80%; box-sizing: border-box; font-size: 16px; }
+        .info-box { background: #ecf0f1; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left; }
+        .checkbox-container { text-align: left; margin: 10px 0; padding-left: 20px; }
+        label { font-size: 18px; margin-left: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <h1>👑 阿瓦隆 (Avalon)</h1>
+    <div id="status-bar" class="hidden info-box">
+        <strong>当前战况</strong> - 好人: <span id="good-score">0</span> 胜 | 坏人: <span id="evil-score">0</span> 胜<br>
+        当前第 <span id="current-mission">1</span> 轮任务 | 需派 <span id="required-players">2</span> 人<br>
+        当前是否需要2张失败票才算失败：<strong id="need-two-fails" style="color:red">否</strong><br>
+        连续组队失败: <span id="failed-votes">0</span>/5
+    </div>
+
+    <!-- 1. 玩家输入界面 -->
+    <div id="setup-section">
+        <h2>游戏设置</h2>
+        <p>选择玩家数量：</p>
+        <select id="player-count" onchange="generatePlayerInputs()">
+            <option value="5" selected>5人局 (3好2坏)</option>
+            <option value="6">6人局 (4好2坏)</option>
+            <option value="7">7人局 (4好3坏)</option>
+            <option value="8">8人局 (5好3坏)</option>
+            <option value="9">9人局 (6好3坏)</option>
+            <option value="10">10人局 (6好4坏)</option>
+        </select>
+        
+        <h3>输入玩家姓名</h3>
+        <div id="player-inputs"></div>
+        <button class="btn" onclick="startGame()">开始游戏</button>
+    </div>
+
+    <!-- 2. 身份确认界面 (传阅设备) -->
+    <div id="reveal-section" class="hidden">
+        <h2 id="reveal-title"></h2>
+        <p>请确保只有该玩家看着屏幕，确认完毕后交给下一人。</p>
+        <button id="show-role-btn" class="btn" onclick="showRole()">查看我的身份</button>
+        <div id="role-info" class="hidden info-box"></div>
+        <button id="hide-role-btn" class="btn btn-danger hidden" onclick="nextReveal()">隐藏身份并传给下一位</button>
+    </div>
+
+    <!-- 3. 组队阶段 -->
+    <div id="propose-section" class="hidden">
+        <h2>⚔️ 组队阶段</h2>
+        <p>当前队长: <strong id="leader-name" style="color:#e67e22"></strong></p>
+        <p>请选择你要派出的队员：</p>
+        <div id="team-selection"></div>
+        <button class="btn" onclick="submitTeam()">确定组队</button>
+    </div>
+
+    <!-- 4. 组队投票阶段 -->
+    <div id="vote-team-section" class="hidden">
+        <h2>🗳️ 组队投票</h2>
+        <p>队长派出的队伍: <strong id="proposed-team"></strong></p>
+        <p><span id="current-voter-name"></span>，请投票：</p>
+        <button class="btn btn-success" onclick="recordTeamVote(true)">赞成</button>
+        <button class="btn btn-danger" onclick="recordTeamVote(false)">反对</button>
+    </div>
+
+    <!-- 5. 任务执行阶段 -->
+    <div id="mission-section" class="hidden">
+        <h2>📜 任务执行</h2>
+        <p>当前执行任务玩家: <strong id="mission-actor-name"></strong></p>
+        <p class="info-box">如果你是好人，你只能投“成功”。如果你是坏人，你可以选择“成功”或“失败”。</p>
+        <div id="mission-buttons">
+            <button class="btn btn-success" onclick="recordMissionVote(true)">任务成功 🔵</button>
+            <button id="fail-mission-btn" class="btn btn-danger" onclick="recordMissionVote(false)">任务失败 🔴</button>
+        </div>
+    </div>
+
+    <!-- 6. 刺杀阶段 -->
+    <div id="assassinate-section" class="hidden">
+        <h2>🗡️ 刺杀环节！</h2>
+        <p style="color:red">好人赢得了3次任务！坏人阵营翻牌（<span id="evil-players-list"></span>）</p>
+        <p>请刺客选择一个人进行暗杀（如果你杀死了梅林，坏人反败为胜！）</p>
+        <div id="assassinate-selection"></div>
+        <button class="btn btn-danger" onclick="submitAssassination()">确认刺杀</button>
+    </div>
+
+    <!-- 7. 游戏结束 -->
+    <div id="game-over-section" class="hidden">
+        <h1 id="game-result"></h1>
+        <div id="final-roles" class="info-box"></div>
+        <button class="btn" onclick="location.reload()">重新开始</button>
+    </div>
+
+</div>
+
+<script>
+    // 不同人数下的游戏配置
+    const GAME_CONFIG = {
+        5: { sizes: [2, 3, 2, 3, 3], failsNeed: [1, 1, 1, 1, 1], roles: ["Merlin", "Percival", "Loyal Servant", "Assassin", "Morgana"] },
+        6: { sizes: [2, 3, 4, 3, 4], failsNeed: [1, 1, 1, 1, 1], roles: ["Merlin", "Percival", "Loyal Servant", "Loyal Servant", "Assassin", "Morgana"] },
+        7: { sizes: [2, 3, 3, 4, 4], failsNeed: [1, 1, 1, 2, 1], roles: ["Merlin", "Percival", "Loyal Servant", "Loyal Servant", "Assassin", "Morgana", "Minion"] },
+        8: { sizes: [3, 4, 4, 5, 5], failsNeed: [1, 1, 1, 2, 1], roles: ["Merlin", "Percival", "Loyal Servant", "Loyal Servant", "Loyal Servant", "Assassin", "Morgana", "Minion"] },
+        9: { sizes: [3, 4, 4, 5, 5], failsNeed: [1, 1, 1, 2, 1], roles: ["Merlin", "Percival", "Loyal Servant", "Loyal Servant", "Loyal Servant", "Loyal Servant", "Assassin", "Morgana", "Mordred"] },
+        10: { sizes: [3, 4, 4, 5, 5], failsNeed: [1, 1, 1, 2, 1], roles: ["Merlin", "Percival", "Loyal Servant", "Loyal Servant", "Loyal Servant", "Loyal Servant", "Assassin", "Morgana", "Mordred", "Oberon"] }
+    };
+
+    let currentConfig = GAME_CONFIG[5];
+    let players = [];
+    let currentRevealIndex = 0;
+    
+    let currentMission = 0; // 0 to 4
+    let leaderIndex = 0;
+    let failedVotes = 0;
+    let goodScore = 0;
+    let evilScore = 0;
+    
+    let proposedTeam = [];
+    let teamVotes = [];
+    let currentTeamVoterIndex = 0;
+    
+    let missionActors = [];
+    let missionVotes = [];
+    let currentMissionActorIndex = 0;
+
+    function getEl(id) { return document.getElementById(id); }
+    function hideAll() { document.querySelectorAll('#app > div:not(#status-bar)').forEach(el => el.classList.add('hidden')); }
+
+    function generatePlayerInputs() {
+        let count = parseInt(getEl('player-count').value);
+        let defaultNames = ["亚瑟", "高文", "兰斯洛特", "加拉哈德", "鲍斯", "崔斯坦", "贝德维尔", "加雷斯", "杰兰特", "帕西瓦尔"];
+        let html = '';
+        for(let i = 0; i < count; i++) {
+            html += `<input type="text" id="p${i}" placeholder="玩家 ${i+1}" value="${defaultNames[i]}"><br>`;
+        }
+        getEl('player-inputs').innerHTML = html;
+    }
+
+    // 初始化一次输入框
+    window.onload = generatePlayerInputs;
+
+    function startGame() {
+        let count = parseInt(getEl('player-count').value);
+        let pNames = [];
+        for(let i = 0; i < count; i++) {
+            pNames.push(getEl('p'+i).value.trim());
+        }
+
+        if (pNames.some(n => !n) || new Set(pNames).size !== count) {
+            alert(`麻烦输入${count}个不重复的名字~`);
+            return;
+        }
+
+        currentConfig = GAME_CONFIG[count];
+        let roles = [...currentConfig.roles];
+        roles.sort(() => Math.random() - 0.5);
+
+        players = pNames.map((name, i) => ({
+            name: name,
+            role: roles[i],
+            isGood: ["Merlin", "Percival", "Loyal Servant"].includes(roles[i])
+        }));
+
+        leaderIndex = Math.floor(Math.random() * count); // 随机选个初始队长
+
+        hideAll();
+        getEl('reveal-section').classList.remove('hidden');
+        setupReveal();
+    }
+
+    // -- 身份确认环节 --
+    function setupReveal() {
+        if (currentRevealIndex >= players.length) {
+            startRound();
+            return;
+        }
+        getEl('reveal-title').innerText = `请将屏幕交给：${players[currentRevealIndex].name}`;
+        getEl('show-role-btn').classList.remove('hidden');
+        getEl('role-info').classList.add('hidden');
+        getEl('hide-role-btn').classList.add('hidden');
+    }
+
+    function showRole() {
+        getEl('show-role-btn').classList.add('hidden');
+        let p = players[currentRevealIndex];
+        let infoHtml = `<h3>你好, ${p.name}</h3>`;
+        
+        let roleNameZH = {
+            "Merlin": "🧙‍♂️ 梅林 (好人)", "Percival": "🛡️ 派西维尔 (好人)",
+            "Loyal Servant": "🧑‍🌾 忠臣 (好人)", "Assassin": "🗡️ 刺客 (坏人)", 
+            "Morgana": "🦹‍♀️ 莫甘娜 (坏人)", "Minion": "🦹 爪牙 (坏人)",
+            "Mordred": "👿 莫德雷德 (坏人)", "Oberon": "🐺 奥伯伦 (坏人)"
+        }[p.role];
+        
+        infoHtml += `<p>你的身份是：<strong>${roleNameZH}</strong></p>`;
+
+        if (p.role === "Merlin") {
+            let evils = players.filter(x => !x.isGood && x.role !== "Mordred").map(x => x.name).join('、');
+            infoHtml += `<p style="color:red">你看到的坏人是：${evils || "无"}</p>`;
+        } else if (p.role === "Percival") {
+            let mm = players.filter(x => x.role === "Merlin" || x.role === "Morgana").map(x => x.name);
+            mm.sort(() => Math.random() - 0.5);
+            infoHtml += `<p style="color:#2980b9">你看到的可能是梅林或莫甘娜的人是（顺序随机）：${mm.join('、')}</p>`;
+        } else if (!p.isGood && p.role !== "Oberon") {
+            let evils = players.filter(x => !x.isGood && x.role !== "Oberon" && x.name !== p.name).map(x => x.name).join('、');
+            infoHtml += `<p style="color:red">你的坏人同伙是：${evils || "无"}</p>`;
+        } else if (p.role === "Oberon") {
+            infoHtml += `<p>你是孤狼坏人，你看不到其他坏人，别的坏人也不知道你。</p>`;
+        } else {
+            infoHtml += `<p>你是一个闭眼平民，靠推理抓出坏人吧！</p>`;
+        }
+
+        getEl('role-info').innerHTML = infoHtml;
+        getEl('role-info').classList.remove('hidden');
+        getEl('hide-role-btn').classList.remove('hidden');
+    }
+
+    function nextReveal() {
+        currentRevealIndex++;
+        getEl('role-info').innerHTML = "";
+        setupReveal();
+    }
+
+    // -- 组队环节 --
+    function updateStatus() {
+        getEl('status-bar').classList.remove('hidden');
+        getEl('good-score').innerText = goodScore;
+        getEl('evil-score').innerText = evilScore;
+        getEl('current-mission').innerText = currentMission + 1;
+        getEl('required-players').innerText = currentConfig.sizes[currentMission];
+        getEl('failed-votes').innerText = failedVotes;
+        
+        let reqFails = currentConfig.failsNeed[currentMission];
+        getEl('need-two-fails').innerText = (reqFails > 1) ? `是 (需${reqFails}张)` : "否";
+    }
+
+    function startRound() {
+        if (evilScore >= 3) return endGame(false, "坏人成功破坏了3次任务！坏人阵营获胜！");
+        if (goodScore >= 3) return startAssassination();
+
+        updateStatus();
+        hideAll();
+        getEl('propose-section').classList.remove('hidden');
+        getEl('leader-name').innerText = players[leaderIndex].name;
+
+        let selHtml = "";
+        players.forEach(p => {
+            selHtml += `<div class="checkbox-container"><input type="checkbox" id="chk-${p.name}" value="${p.name}"> <label for="chk-${p.name}">${p.name}</label></div>`;
+        });
+        getEl('team-selection').innerHTML = selHtml;
+    }
+
+    function submitTeam() {
+        let req = currentConfig.sizes[currentMission];
+        let checked = document.querySelectorAll('#team-selection input:checked');
+        if (checked.length !== req) {
+            alert(`请正好选择 ${req} 人！`);
+            return;
+        }
+        proposedTeam = Array.from(checked).map(c => c.value);
+        
+        // 开始组队投票
+        teamVotes = [];
+        currentTeamVoterIndex = 0;
+        getEl('proposed-team').innerText = proposedTeam.join(', ');
+        
+        hideAll();
+        setupTeamVote();
+    }
+
+    // -- 组队投票环节 --
+    function setupTeamVote() {
+        if (currentTeamVoterIndex >= players.length) {
+            processTeamVotes();
+            return;
+        }
+        alert(`请将设备递给【${players[currentTeamVoterIndex].name}】进行秘密投票。`);
+        
+        getEl('vote-team-section').classList.remove('hidden');
+        getEl('current-voter-name').innerText = players[currentTeamVoterIndex].name;
+    }
+
+    function recordTeamVote(isApprove) {
+        teamVotes.push({ name: players[currentTeamVoterIndex].name, approve: isApprove });
+        currentTeamVoterIndex++;
+        getEl('vote-team-section').classList.add('hidden'); // 先隐藏防止偷看
+        setTimeout(setupTeamVote, 100);
+    }
+
+    function processTeamVotes() {
+        let approves = teamVotes.filter(v => v.approve).length;
+        let reject = players.length - approves;
+        let voteStr = teamVotes.map(v => `${v.name}: ${v.approve ? '✅赞成' : '❌反对'}`).join('\n');
+        
+        let msg = `投票结果公开：\n${approves} 赞成 vs ${reject} 反对\n\n${voteStr}\n\n`;
+        
+        if (approves > players.length / 2) {
+            alert(msg + "🎉 组队成功！进入任务执行环节。");
+            failedVotes = 0;
+            updateStatus();
+            
+            missionActors = proposedTeam.slice();
+            missionVotes = [];
+            currentMissionActorIndex = 0;
+            
+            hideAll();
+            setupMissionVote();
+        } else {
+            failedVotes++;
+            alert(msg + `⚠️ 组队失败！（当前连续失败次数：${failedVotes}）`);
+            if (failedVotes >= 5) {
+                endGame(false, "连续5次组队失败！坏人阵营获胜！");
+            } else {
+                leaderIndex = (leaderIndex + 1) % players.length;
+                startRound();
+            }
+        }
+    }
+
+    // -- 任务执行环节 --
+    function setupMissionVote() {
+        if (currentMissionActorIndex >= missionActors.length) {
+            processMissionVotes();
+            return;
+        }
+        let actorName = missionActors[currentMissionActorIndex];
+        let p = players.find(x => x.name === actorName);
+        
+        alert(`请将设备递给出任务的【${actorName}】进行匿名投票。`);
+        
+        getEl('mission-section').classList.remove('hidden');
+        getEl('mission-actor-name').innerText = actorName;
+        
+        // 只有坏人能投失败
+        if (p.isGood) {
+            getEl('fail-mission-btn').classList.add('hidden');
+        } else {
+            getEl('fail-mission-btn').classList.remove('hidden');
+        }
+    }
+
+    function recordMissionVote(isSuccess) {
+        missionVotes.push(isSuccess);
+        currentMissionActorIndex++;
+        getEl('mission-section').classList.add('hidden');
+        setTimeout(setupMissionVote, 100);
+    }
+
+    function processMissionVotes() {
+        missionVotes.sort(() => Math.random() - 0.5);
+        let fails = missionVotes.filter(x => !x).length;
+        let successes = missionVotes.length - fails;
+        let reqFails = currentConfig.failsNeed[currentMission];
+        
+        let msg = `本轮任务结算开票：\n🔵 成功票: ${successes}\n🔴 失败票: ${fails}\n\n`;
+        
+        if (fails >= reqFails) {
+            evilScore++;
+            alert(msg + `🚨 任务失败！！(需要 ${reqFails} 张，开出 ${fails} 张)`);
+        } else {
+            goodScore++;
+            let extraText = fails > 0 ? " (惊险过关，未达失败票要求)" : "";
+            alert(msg + `🌟 任务成功！！${extraText}`);
+        }
+        
+        currentMission++;
+        leaderIndex = (leaderIndex + 1) % players.length;
+        startRound();
+    }
+
+    // -- 刺杀梅林环节 --
+    function startAssassination() {
+        hideAll();
+        getEl('assassinate-section').classList.remove('hidden');
+        let evils = players.filter(p => !p.isGood).map(p => p.name).join(' 和 ');
+        getEl('evil-players-list').innerText = evils;
+        
+        let selHtml = "";
+        players.filter(p => p.isGood).forEach(p => {
+            selHtml += `<div><input type="radio" name="assassinate-target" id="ass-${p.name}" value="${p.name}"> <label for="ass-${p.name}">${p.name}</label></div>`;
+        });
+        getEl('assassinate-selection').innerHTML = selHtml;
+    }
+
+    function submitAssassination() {
+        let sel = document.querySelector('input[name="assassinate-target"]:checked');
+        if (!sel) { alert("请选择一个刺杀目标！"); return; }
+        
+        let targetName = sel.value;
+        let target = players.find(p => p.name === targetName);
+        
+        if (target.role === "Merlin") {
+            endGame(false, `🔪 刺杀成功！你认出了梅林（${target.name}），坏人阵营绝地大翻盘获胜！`);
+        } else {
+            endGame(true, `🛡️ 刺杀失败！${target.name} 不是梅林（真实身份是：${target.role}）。好人阵营最终获胜！`);
+        }
+    }
+
+    function endGame(goodWon, msg) {
+        hideAll();
+        getEl('game-over-section').classList.remove('hidden');
+        let titleInfo = goodWon ? "🏆 好人阵营胜利！" : "☠️ 坏人阵营胜利！";
+        getEl('game-result').innerText = titleInfo + "\n\n" + msg;
+        
+        let summary = "<b>全员真实身份：</b><br>";
+        players.forEach(p => {
+            let roleName = p.role;
+            if(p.role === "Merlin") roleName= "梅林";
+            if(p.role === "Percival") roleName= "派西维尔";
+            if(p.role === "Loyal Servant") roleName= "忠臣";
+            if(p.role === "Assassin") roleName= "刺客";
+            if(p.role === "Morgana") roleName= "莫甘娜";
+            if(p.role === "Minion") roleName= "爪牙";
+            if(p.role === "Mordred") roleName= "莫德雷德";
+            if(p.role === "Oberon") roleName= "奥伯伦";
+            summary += `${p.name} - ${roleName} (${p.isGood ? '好人' : '坏人'})<br>`;
+        });
+        getEl('final-roles').innerHTML = summary;
+    }
+
+</script>
+</body>
+</html>
