@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阿瓦隆 - 手机联机版</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #2c3e50; color: #ecf0f1; text-align: center; padding: 20px; }
+        #app { max-width: 600px; margin: 0 auto; background: #34495e; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h1, h2, h3 { color: #f1c40f; }
+        .hidden { display: none; }
+        .btn { padding: 12px 20px; margin: 10px; border: none; border-radius: 8px; background: #e67e22; color: white; cursor: pointer; font-size: 18px; font-weight: bold; width: 100%; display: block; box-sizing: border-box;}
+        .btn:hover { background: #d35400; }
+        .btn-success { background: #2ecc71; }
+        .btn-success:hover { background: #27ae60; }
+        .btn-danger { background: #e74c3c; }
+        .btn-danger:hover { background: #c0392b; }
+        input[type="text"] { padding: 12px; margin: 10px 0; width: 100%; box-sizing: border-box; font-size: 18px; border-radius: 8px; border: none;}
+        .info-box { background: #ecf0f1; color: #2c3e50; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left; }
+        .player-tag { display: inline-block; background: #3498db; padding: 5px 10px; border-radius: 5px; margin: 5px; color:white; }
+        
+        #game-log {
+            height: 150px; overflow-y: auto; background: #1a252f; color: #1abc9c; 
+            padding: 10px; border-radius: 5px; font-size: 14px; margin-bottom: 20px; text-align: left;
+        }
+        .checkbox-container { margin: 10px 0; padding: 10px; background: #2980b9; border-radius: 5px; display: block; color:white; text-align:left;}
+        .checkbox-container input { transform: scale(1.5); margin-right: 10px; }
+        #status-bar { border-left: 5px solid #e74c3c; padding-left: 10px;}
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <h1>👑 阿瓦隆线上联机版</h1>
+    <h3 id="connect-status">🔴 未连接到电脑服务器...</h3>
+
+    <div id="join-section">
+        <input type="text" id="username" placeholder="输入玩家大名（如亚瑟）">
+        <button class="btn btn-success" onclick="joinRoom()">进入酒馆加入游戏</button>
+    </div>
+
+    <!-- 游戏直播日志 (仅游戏时显示) -->
+    <div id="game-status" class="info-box hidden">
+        <div id="status-bar">
+            <strong>目前需要 <span id="req-count-label">--</span> 人上车 | 当前队长：[<span id="leader-label" style="color:#e67e22;">--</span>]</strong>
+        </div>
+    </div>
+    <div id="game-log" class="hidden"></div>
+    
+    <div id="lobby-section" class="hidden info-box">
+        <p>当前房间：<span id="player-count">0</span> / 10 人（自动匹配到5~10人局规则，不足5人自动加AI）</p>
+        <div id="player-list"></div>
+        <button id="start-btn" class="btn hidden" onclick="requestStartGame()">🚀 我准备好了，发牌开杀！</button>
+    </div>
+
+    <!-- 查看底牌 -->
+    <div id="role-section" class="hidden info-box" style="background:#f39c12; color:white;">
+        <h2 style="color:white; margin:0;">📜 你的底牌已发下来了，速看</h2>
+        <div id="role-card" style="margin-top:10px;"></div>
+        <p style="font-size:12px; margin-bottom:0;">看完请随时留在该网页，游戏将自动进行推送互动</p>
+    </div>
+
+    <!-- 阶段 1: 队长选人 -->
+    <div id="propose-section" class="hidden info-box">
+        <h3>⚔️ 轮到你带队选人了！</h3>
+        <p>请仔细挑选 <strong id="req-propose-count">--</strong> 个你觉得是好人的队友上车：</p>
+        <div id="team-selection"></div>
+        <button class="btn" onclick="submitProposedTeam()">确定选拔出发</button>
+    </div>
+
+    <!-- 阶段 2: 所有人表决选人结果 -->
+    <div id="vote-section" class="hidden info-box">
+        <h3>🗳️ 队长提议了以下阵容，这可以上车吗？</h3>
+        <p id="voting-team-names"></p>
+        <button class="btn btn-success" onclick="submitTeamVote(true)">✅ 绝对赞成</button>
+        <button class="btn btn-danger" onclick="submitTeamVote(false)">❌ 强行反对！</button>
+    </div>
+
+    <!-- 阶段 3: 执行任务 -->
+    <div id="mission-section" class="hidden info-box">
+        <h3>🔥 冲啊！你正在执行任务出车中！</h3>
+        <button class="btn btn-success" style="height: 100px; font-size:24px;" onclick="submitMissionVote(true)">任务成功 🔵</button>
+        <!-- 只有坏人的视野里才会显示投失败 -->
+        <button id="fail-mission-btn" class="btn btn-danger" style="height: 100px; font-size:24px;" onclick="submitMissionVote(false)">任务破坏 🔴</button>
+    </div>
+
+    <!-- 阶段 4: 刺杀梅林 -->
+    <div id="assassinate-section" class="hidden info-box">
+        <h3 style="color:#c0392b;">🗡️ 致命一击：指定刺杀！</h3>
+        <p>坏人反败为胜的唯一机会，请选择一个梅林杀掉：</p>
+        <div id="assassinate-selection"></div>
+        <button class="btn btn-danger" onclick="submitAssassination()">确认刺杀</button>
+    </div>
+
+    <!-- 阶段 5: 游戏结束 -->
+    <div id="game-over-section" class="hidden info-box">
+        <h1 id="game-result-title"></h1>
+        <p id="game-result-reason"></p>
+        <div id="final-roles" style="text-align:left; font-size:14px; background:#ecf0f1; padding:10px;"></div>
+        <p style="font-size:12px; color:#7f8c8d;">即将自动刷新回大厅...</p>
+    </div>
+</div>
+
+<script>
+    const socket = io(); 
+    let myName = "";
+    let reqProposeCount = 0;
+
+    socket.on('connect', () => {
+        document.getElementById('connect-status').innerText = '🟢 已连上服务器底座！';
+        document.getElementById('connect-status').style.color = '#2ecc71';
+    });
+
+    socket.on('disconnect', () => { location.reload(); });
+    socket.on('server_error', (data) => alert(data.msg));
+    socket.on('force_reload', () => { location.reload(); });
+
+    function getEl(id) { return document.getElementById(id); }
+    function hide(id) { getEl(id).classList.add('hidden'); }
+    function show(id) { getEl(id).classList.remove('hidden'); }
+
+    // ====== 加入大厅 ===================
+    function joinRoom() {
+        const nameInput = getEl('username').value.trim();
+        if (!nameInput) return alert("必须起个名字哦！");
+        myName = nameInput;
+        socket.emit('join', { name: myName });
+    }
+
+    socket.on('update_players', (data) => {
+        if(myName) {
+            hide('join-section');
+            show('lobby-section');
+        }
+        getEl('player-count').innerText = data.count;
+        getEl('player-list').innerHTML = data.players.map(p => 
+            `<span class="player-tag">${p}${p === myName ? ' (我)' : ''}</span>`
+        ).join('');
+        
+        if (data.count > 0) show('start-btn');
+    });
+
+    function requestStartGame() {
+        socket.emit('start_game');
+    }
+
+    // ====== 发牌 ===================
+    socket.on('receive_role', (data) => {
+        hide('lobby-section');
+        show('role-section');
+        show('game-log');
+        show('game-status');
+        
+        let bgColor = data.is_good ? '#2980b9' : '#c0392b'; // 好人蓝色，坏人红色
+        getEl('role-section').style.background = bgColor;
+
+        let cardHtml = `<p style="font-size:24px; margin-bottom:5px;"><strong>${data.role}</strong></p>`;
+        if (data.vision) cardHtml += `<hr style="border-color: rgba(255,255,255,0.2);"><p style="color: #f1c40f; font-size:16px;">【雷达眼】<br>${data.vision}</p>`;
+        cardHtml += `<hr style="border-color: rgba(255,255,255,0.2);"><div style="font-size:15px; text-align:left; background:rgba(0,0,0,0.2); padding:10px; border-radius:5px;">${data.desc}</div>`;
+        getEl('role-card').innerHTML = cardHtml;
+    });
+
+    // ====== 战报日志 & 状态广播 =======
+    socket.on('game_log', (data) => {
+        let logDiv = getEl('game-log');
+        logDiv.innerHTML += `<div>> ${data.msg}</div>`;
+        logDiv.scrollTop = logDiv.scrollHeight; // 自动滚到底部
+    });
+
+    socket.on('state_update', (data) => {
+        getEl('req-count-label').innerText = data.req_players;
+        getEl('leader-label').innerText = data.leader;
+    });
+
+    // ====== 1. 提议阶段 (队长) =========
+    socket.on('request_propose', (data) => {
+        reqProposeCount = data.req_count;
+        show('propose-section');
+        getEl('req-propose-count').innerText = reqProposeCount;
+
+        getEl('team-selection').innerHTML = data.players.map(p => 
+            `<label class="checkbox-container"><input type="checkbox" value="${p}"> ${p}</label>`
+        ).join('');
+    });
+
+    function submitProposedTeam() {
+        let checked = document.querySelectorAll('#team-selection input:checked');
+        if (checked.length !== reqProposeCount) return alert(`必须恰好选 ${reqProposeCount} 人！`);
+        let team = Array.from(checked).map(c => c.value);
+        hide('propose-section');
+        socket.emit('submit_team', { team: team });
+    }
+
+    // ====== 2. 选人公决阶段 ============
+    socket.on('request_team_vote', (data) => {
+        show('vote-section');
+        getEl('voting-team-names').innerHTML = data.team.map(t => `<span class="player-tag">${t}</span>`).join(' ');
+    });
+
+    function submitTeamVote(isApprove) {
+        hide('vote-section');
+        socket.emit('submit_team_vote', { approve: isApprove });
+    }
+
+    // ====== 3. 任务执行阶段 ============
+    socket.on('request_mission_vote', (data) => {
+        show('mission-section');
+        if (data.is_good) {
+            hide('fail-mission-btn'); // 好人没有失败按钮
+        } else {
+            show('fail-mission-btn');
+        }
+    });
+
+    function submitMissionVote(isSuccess) {
+        hide('mission-section');
+        socket.emit('submit_mission_vote', { success: isSuccess });
+    }
+
+    // ====== 4. 刺客大翻盘环节 ============
+    socket.on('request_assassination', (data) => {
+        show('assassinate-section');
+        getEl('assassinate-selection').innerHTML = data.targets.map(p => 
+            `<label class="checkbox-container"><input type="radio" name="ass-target" value="${p}"> ${p}</label>`
+        ).join('');
+    });
+
+    function submitAssassination() {
+        let sel = document.querySelector('input[name="ass-target"]:checked');
+        if (!sel) return alert("选一个人扣扳机！");
+        hide('assassinate-section');
+        socket.emit('submit_assassination', { target: sel.value });
+    }
+
+    // ====== 5. 游戏结束 ================
+    socket.on('game_over', (data) => {
+        hide('propose-section');
+        hide('vote-section');
+        hide('mission-section');
+        hide('assassinate-section');
+        show('game-over-section');
+
+        getEl('game-result-title').innerText = data.good_won ? "🏆 圣剑闪耀，好人获胜！" : "☠️ 幽暗降临，坏人获胜！";
+        getEl('game-result-reason').innerText = data.reason;
+        getEl('final-roles').innerHTML = "<strong>局后复盘</strong><br>" + data.roles.join('<br>');
+    });
+
+</script>
+</body>
+</html>

@@ -1,0 +1,300 @@
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, emit
+import random
+import time
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'avalon_secret!'
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# 全局房间状�?(固定5人局配置)
+room = {
+    'players': [], # [{'sid': 'xxx', 'name': '名字', 'role': '具体', 'is_good': True/False, 'is_bot': False}]
+    'state': 'waiting', # waiting, building, voting, mission, assassination, over
+    'mission_sizes': [2, 3, 2, 3, 3],
+    'current_mission': 0,
+    'leader_index': 0,
+    'failed_votes': 0,
+    'results': [], # [True, False, ...]
+    'proposed_team': [], # 选中的玩家名字列�?
+    'team_votes': {}, # {name: bool}
+    'mission_votes': [], # [bool, ...]
+    'logs': [] # 用于给前端展示战�?
+}
+
+def log(msg):
+    room['logs'].append(msg)
+    socketio.emit('game_log', {'msg': msg}, broadcast=True)
+    print(f"[LOG] {msg}")
+
+def broadcast_state():
+    # 广播给所有人当前的重要战况信�?
+    data = {
+        'state': room['state'],
+        'current_mission': room['current_mission'] + 1 if room['current_mission'] < 5 else 5,
+        'req_players': room['mission_sizes'][room['current_mission']] if room['current_mission'] < 5 else 0,
+        'leader': room['players'][room['leader_index']]['name'] if room['players'] else '�?,
+        'failed_votes': room['failed_votes'],
+        'results': room['results'],
+        'logs': room['logs'][-5:] # 发送最�?条战�?
+    }
+    socketio.emit('state_update', data, broadcast=True)
+
+@app.route('/')
+def index():
+    return render_template('room.html')
+
+@socketio.on('join')
+def on_join(data):
+    name = data['name']
+    sid = request.sid
+    if any(p['name'] == name for p in room['players']):
+        emit('server_error', {'msg': '名字已被占用，换一个吧�?})
+        return
+    if room['state'] != 'waiting':
+        emit('server_error', {'msg': '游戏已经开始了，等下一局吧！'})
+        return
+
+    room['players'].append({'sid': sid, 'name': name, 'role': None, 'is_good': None, 'is_bot': False})
+    emit('update_players', {'players': [p['name'] for p in room['players']], 'count': len(room['players'])}, broadcast=True)
+
+@socketio.on('start_game')
+def on_start_game():
+    if room['state'] != 'waiting': return
+    if len(room['players']) > 5:
+        emit('server_error', {'msg': '当前仅支�?人局�?})
+        return
+
+    bot_names = ['🤖 AI-高文', '🤖 AI-兰斯洛特', '🤖 AI-加拉哈德', '🤖 AI-鲍斯']
+    bot_counter = 0
+    while len(room['players']) < 5:
+        room['players'].append({
+            'sid': f'bot_{bot_counter}', 
+            'name': bot_names[bot_counter], 
+            'role': None, 
+            'is_good': None, 
+            'is_bot': True
+        })
+        bot_counter += 1
+
+    room['state'] = 'playing'
+    room['current_mission'] = 0
+    room['leader_index'] = random.randint(0, 4)
+    room['failed_votes'] = 0
+    room['results'] = []
+    room['logs'] = []
+    
+    roles = ["Merlin", "Percival", "Loyal Servant", "Assassin", "Morgana"]
+    random.shuffle(roles)
+    
+    for i, p in enumerate(room['players']):
+        p['role'] = roles[i]
+        p['is_good'] = p['role'] in ["Merlin", "Percival", "Loyal Servant"]
+
+        if not p['is_bot']:
+            vision_msg = ""
+            if p['role'] == 'Merlin':
+                evils = [x['name'] for x in room['players'] if not x['is_good']]
+                vision_msg = f"坏人是：{', '.join(evils)}"
+            elif p['role'] == 'Percival':
+                mMs = [x['name'] for x in room['players'] if x['role'] in ['Merlin', 'Morgana']]
+                random.shuffle(mMs)
+                vision_msg = f"梅林/莫甘娜是：{', '.join(mMs)}"
+            elif not p['is_good']:
+                evils = [x['name'] for x in room['players'] if not x['is_good'] and x['name'] != p['name']]
+                vision_msg = f"坏人队友是：{', '.join(evils)}"
+
+            emit('receive_role', {
+                'role': p['role'], 
+                'is_good': p['is_good'],
+                'vision': vision_msg
+            }, to=p['sid'])
+
+    log("🌟 游戏正式开始！身份已下发�?)
+    start_building_phase()
+
+def start_building_phase():
+    room['state'] = 'building'
+    room['proposed_team'] = []
+    room['team_votes'] = {}
+    broadcast_state()
+    
+    leader = room['players'][room['leader_index']]
+    req_count = room['mission_sizes'][room['current_mission']]
+    log(f"👑 当前队长�?【{leader['name']}】，需挑�?{req_count} 人执行任务�?)
+    
+    if leader['is_bot']:
+        # AI队长随机组队 (包含自己)
+        others = [p['name'] for p in room['players'] if p['name'] != leader['name']]
+        bot_team = [leader['name']] + random.sample(others, req_count - 1)
+        socketio.start_background_task(bot_submit_team, bot_team)
+    else:
+        # 通知这名真玩家进行选人
+        players_list = [p['name'] for p in room['players']]
+        socketio.emit('request_propose', {'players': players_list, 'req_count': req_count}, to=leader['sid'])
+
+def bot_submit_team(team):
+    time.sleep(2) # 模拟思考时�?
+    handle_submit_team({'team': team})
+
+@socketio.on('submit_team')
+def on_submit_team(data):
+    handle_submit_team(data)
+
+def handle_submit_team(data):
+    room['proposed_team'] = data['team']
+    log(f"📋 队长提议了队伍：{', '.join(room['proposed_team'])}")
+    room['state'] = 'voting'
+    broadcast_state()
+
+    # 向所有真人发送投票请�?
+    for p in room['players']:
+        if not p['is_bot']:
+            socketio.emit('request_team_vote', {'team': room['proposed_team']}, to=p['sid'])
+        else:
+            # AI 的简单投票逻辑�?0%随机赞成，好人更大概率赞�?
+            is_approve = p['is_good'] or random.choice([True, False])
+            socketio.start_background_task(bot_submit_team_vote, p['name'], is_approve)
+
+def bot_submit_team_vote(name, approve):
+    time.sleep(random.uniform(1, 3))
+    handle_team_vote(name, approve)
+
+@socketio.on('submit_team_vote')
+def on_submit_team_vote(data):
+    name = next(p['name'] for p in room['players'] if p['sid'] == request.sid)
+    handle_team_vote(name, data['approve'])
+
+def handle_team_vote(name, approve):
+    if name in room['team_votes']: return
+    room['team_votes'][name] = approve
+    # log(f"🗳�?{name} 已投票�?) # 可以开启来显示进度
+
+    if len(room['team_votes']) == 5:
+        # 开�?
+        approves = sum(1 for v in room['team_votes'].values() if v)
+        vote_details = ", ".join([f"{k}:{ '�? if v else '�?}" for k, v in room['team_votes'].items()])
+        log(f"📊 投票结果: {approves} 赞成, {5-approves} 反对。详�? {vote_details}")
+
+        if approves > 2:
+            log("🎉 组队成功！队伍出发�?)
+            room['failed_votes'] = 0
+            start_mission_phase()
+        else:
+            room['failed_votes'] += 1
+            log(f"⚠️ 组队失败�?连续失败 {room['failed_votes']}/5)")
+            if room['failed_votes'] >= 5:
+                game_over(False, "坏人胜利：连�?次死车导致队伍罢工！")
+            else:
+                room['leader_index'] = (room['leader_index'] + 1) % 5
+                start_building_phase()
+
+def start_mission_phase():
+    room['state'] = 'mission'
+    room['mission_votes'] = []
+    broadcast_state()
+    
+    # 找到队伍里的�?
+    for member_name in room['proposed_team']:
+        p = next(p for p in room['players'] if p['name'] == member_name)
+        if p['is_bot']:
+            # AI任务逻辑：好人必成功，坏人必定失败（简单）
+            success = p['is_good']
+            socketio.start_background_task(bot_submit_mission_vote, success)
+        else:
+            socketio.emit('request_mission_vote', {'is_good': p['is_good']}, to=p['sid'])
+
+def bot_submit_mission_vote(success):
+    time.sleep(random.uniform(2, 4))
+    handle_mission_vote(success)
+
+@socketio.on('submit_mission_vote')
+def on_submit_mission_vote(data):
+    handle_mission_vote(data['success'])
+
+def handle_mission_vote(success):
+    room['mission_votes'].append(success)
+    if len(room['mission_votes']) == len(room['proposed_team']):
+        # 本轮开票结�?
+        fails = room['mission_votes'].count(False)
+        is_success = fails == 0
+        room['results'].append(is_success)
+        
+        log(f"📜 任务结算：{'�?成功' if is_success else '🚨 失败'}�?开�?{fails} 张失败票)")
+        
+        good_wins = room['results'].count(True)
+        evil_wins = room['results'].count(False)
+        
+        if evil_wins >= 3:
+            game_over(False, "坏人胜利：三次任务失败！")
+        elif good_wins >= 3:
+            start_assassination_phase()
+        else:
+            room['current_mission'] += 1
+            room['leader_index'] = (room['leader_index'] + 1) % 5
+            start_building_phase()
+
+def start_assassination_phase():
+    room['state'] = 'assassination'
+    log("🗡�?好人率先赢得3次任务！进入刺杀环节！请刺客指定暗杀目标�?)
+    broadcast_state()
+    
+    assassin = next(p for p in room['players'] if p['role'] == 'Assassin')
+    good_names = [p['name'] for p in room['players'] if p['is_good']]
+    
+    if assassin['is_bot']:
+        target = random.choice(good_names)
+        socketio.start_background_task(bot_submit_assassination, target)
+    else:
+        socketio.emit('request_assassination', {'targets': good_names}, to=assassin['sid'])
+
+def bot_submit_assassination(target):
+    time.sleep(5)
+    handle_assassination(target)
+
+@socketio.on('submit_assassination')
+def on_submit_assassination(data):
+    handle_assassination(data['target'])
+
+def handle_assassination(target_name):
+    target = next(p for p in room['players'] if p['name'] == target_name)
+    log(f"🗡�?刺客扣动了扳机，刺杀�?【{target_name}�?�?)
+    
+    if target['role'] == 'Merlin':
+        game_over(False, f"坏人绝地翻盘！被刺杀�?{target_name} 正是梅林�?)
+    else:
+        game_over(True, f"好人最终获胜！被刺杀�?{target_name} 不是梅林（是 {target['role']}）！")
+
+def game_over(good_won, reason):
+    room['state'] = 'over'
+    log(f"🏆 游戏结束！{reason}")
+    broadcast_state()
+    
+    final_roles = [f"{p['name']}: {p['role']}" for p in room['players']]
+    socketio.emit('game_over', {
+        'good_won': good_won,
+        'reason': reason,
+        'roles': final_roles
+    }, broadcast=True)
+    
+    # 5秒后重置房间供下一次使�?
+    def reset():
+        time.sleep(15)
+        room['players'] = []
+        room['state'] = 'waiting'
+        socketio.emit('force_reload', broadcast=True)
+    socketio.start_background_task(reset)
+
+@socketio.on('disconnect')
+def on_disconnect():
+    sid = request.sid
+    # 为了简化，有人掉线直接结束并重置游�?
+    p = next((x for x in room['players'] if x['sid'] == sid), None)
+    if p and room['state'] not in ['waiting', 'over']:
+        log(f"�?玩家 {p['name']} 掉线，游戏非正常结束，正在重置大�?..")
+        room['players'] = []
+        room['state'] = 'waiting'
+        socketio.emit('force_reload', broadcast=True)
+
+if __name__ == '__main__':
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
